@@ -9,9 +9,6 @@
  *
  * Copyright (C) 2009-2012 Cypress Semiconductor, Inc.
  * Copyright (C) 2010-2011 Motorola Mobility, Inc.
- * Copyright (C) 2015 Vineeth Raj <contact.twn@openmailbox.org>
- * Copyright (C) 2015 Avinaba Dalal <d97.avinaba@gmail.com>
- *
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -46,8 +43,6 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #endif
-
-#include <linux/input/doubletap2wake.h>
 
 /* helpers */
 #define GET_NUM_TOUCHES(x)          ((x) & 0x0F)
@@ -184,51 +179,6 @@
 #define CY_I2C_TCH_ADR	0x24
 #define CY_I2C_LDR_ADR	0x24
 
-#if defined(CONFIG_TOUCHSCREEN_CYTTSP3_D2W)
-#define CYTTSP3_D2W
-
-#include <linux/hrtimer.h>
-#include <asm-generic/cputime.h>
-
-#define D2W_PWRKEY_DUR 60
-#define D2W_FEATHER    50
-#define D2W_TIME       700
-
-int d2w_switch = 0;
-int s2w_switch = 0; 
-int mm_switch = 0;
-int s2w_right = 0;
-int s2w_left = 0;
-int s2w_up = 0;
-int s2w_down = 0;
-int s2w_fwd_diag = 0;
-int s2w_bck_diag = 0;
-int s2w_l = 0;
-int s2w_v = 0;
-int boot_flag=0;
-int key = KEY_POWER;
-/*s2w_switch possible values
-0 - any direction
-1 - left
-2 - right
-3 - up
-4 - down
--1 - off*/
-int s2w_touch_count = 0;
-int s2w_coord_count = 0;
-int x = 0, prev_x = 0, y = 0, prev_y = 0, x_first = 0, y_first = 0, max_x =0, min_x = 0, max_y = 0, min_y = 0;
-static int dir[4], multiple_dir;
-#define S2W_MIN_TOUCH_COUNT 100
-
-static cputime64_t tap_time_pre = 0;
-static int x_pre = 0, y_pre = 0;
-static bool touch_cnt = true;
-bool scr_suspended = false;
-
-static struct input_dev * doubletap2wake_pwrdev;
-static DEFINE_MUTEX(pwrkeyworklock);
-
-#endif
 
 #define CORRECT_LAYOUT_FW 		0x01;
 #define FAILD_LAYOUT_FW				0x02;
@@ -1507,321 +1457,6 @@ static void _cyttsp_get_tracks(struct cyttsp *ts, int cur_tch,
 }
 #endif /* --CY_USE_GEN3 */
 
-#ifdef CYTTSP3_D2W
-
-extern void doubletap2wake_setdev(struct input_dev * input_device) {
- doubletap2wake_pwrdev = input_device;
- printk("set doubletap2wake_pwrdev: %s\n", doubletap2wake_pwrdev->name);
-}
-EXPORT_SYMBOL_GPL(doubletap2wake_setdev);
-
-
-/*void doubletap2wake_setdev(struct input_dev * input_device) {
-      doubletap2wake_pwrdev = input_device;
-      	input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_POWER);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_PLAYPAUSE);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_PREVIOUSSONG);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_NEXTSONG);
-      printk("set doubletap2wake_pwrdev: %s\n", doubletap2wake_pwrdev->name);
-}*/
-
-static void doubletap2wake_presspwr(struct work_struct * doubletap2wake_presspwr_work) {
-	if (!mutex_trylock(&pwrkeyworklock))
-		return;
-	input_event(doubletap2wake_pwrdev, EV_KEY, key, 1);
-	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
-	msleep(D2W_PWRKEY_DUR);
-	input_event(doubletap2wake_pwrdev, EV_KEY, key, 0);
-	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
-	msleep(D2W_PWRKEY_DUR);
-	mutex_unlock(&pwrkeyworklock);
-	return;
-}
-static DECLARE_WORK(doubletap2wake_presspwr_work, doubletap2wake_presspwr);
-
-/* PowerKey trigger */
-static void doubletap2wake_pwrtrigger(void) {
-	schedule_work(&doubletap2wake_presspwr_work);
-	return;
-}
-
-void doubletap2wake_reset(void) {
-	tap_time_pre = 0;
-	x_pre = 0;
-	y_pre = 0;
-	s2w_touch_count = 0;
-	touch_cnt = false;
-}
-
-static inline unsigned int calc_feather(int coord, int prev_coord) {
-	return abs(coord - prev_coord);
-}
-
-static inline void new_touch(int x, int y) {
-	tap_time_pre = ktime_to_ms(ktime_get());
-	x_pre = x;
-	y_pre = y;
-}
-
-int touch_position(int x, int y)
-{
-  if(x<160 && (y>327 && y<527))
-      return 1;
-  if((x>160 && x <320) && (y>327 && y<527))
-      return 2;
-  if(x>320 && (y>327 && y<527))
-      return 3;
-  return 0;
-}
-
-static bool detect_doubletap2wake(int x, int y)
-{
-        key = KEY_POWER;
-	if (touch_cnt == false) {
-		new_touch(x, y);
-	} else {
-		if ((calc_feather(x, x_pre) < D2W_FEATHER) &&
-				(calc_feather(y, y_pre) < D2W_FEATHER) &&
-				(((ktime_to_ms(ktime_get()))-tap_time_pre) < D2W_TIME)) {
-			if(mm_switch) {
-				        if(touch_position(x,y)==1)
-                           key = KEY_PREVIOUSSONG;
-                        if(touch_position(x,y)==2)
-                           key = KEY_PLAYPAUSE;
-                        if(touch_position(x,y)==3)
-                           key = KEY_NEXTSONG;
-			}
-
-			doubletap2wake_reset();
-			return true;
-		} else {
-			doubletap2wake_reset();
-			new_touch(x, y);
-		}
-	}
-	return false;
-} 
-
-void s2w_coord_dump(int c_x, int c_y)
-{
-	//pr_info("%s:x-%d, y-%d\n",__func__,c_x,c_y);
-	if(s2w_coord_count == 0) {
-		x = c_x;
-		y = c_y;
-		x_first = c_x;
-		y_first = c_y;
-	} else {
-		prev_x = x;
-		prev_y = y;
-		x = c_x;
-		y = c_y;
-	}
-	s2w_coord_count++;
-	s2w_touch_count++;
-
-}
-void s2w_coord_reset(void)
-{
-	int i = 0;
-	x =0;
-	y = 0;
-	x_pre = 0;
-	y_pre = 0;
-	x_first = 0;
-	y_first = 0;
-	multiple_dir = 0;
-	for(i = 0; i < 4; i++)
-		dir[i] = 0;
-	s2w_coord_count = 0;
-	s2w_touch_count = 0;
-	max_x = 0;
-	min_x = 0;
-	max_y = 0;
-	min_y = 0;
-}
-
-
-void direction_vector_calc(void) {
-	int tot = 0;
-	if(s2w_coord_count > 1) {
-      if(x > x_pre) {
-      	dir[0]++;  //right
-      	tot++;
-      } else if (x < x_pre) {
-      	dir[1]++;  //left
-      	tot++;
-      }
-      if(y < y_pre) {
-      	dir[2]++;   //up
-      	tot++;
-      } else if (y > y_pre) {
-      	dir[3]++;   //down
-      	tot++;
-      }
-      //To determine whether both x and y co-ordinates have changed from previous input or not and act accordingly.
-      if(tot > 1)
-      	multiple_dir++;
-      //To determine max deviation in x coord.
-      if(x > max_x)
-      	max_x = x;
-      //To determine min deviation in x coord.
-      if(x < min_x)
-      	min_x = x;
-      //To determine max deviation in y coord.
-      if(y > max_y)
-      	max_y = y;
-      //To determine min deviation in y coord.
-      if(y < min_y)
-      	min_y = y;
-  } else {
-  	min_y = y;
-  	min_x = x;
-  	max_x = x;
-  	max_y = y;
-  }
-}
-
-int s2w_coord_nature(void)
-{
-	
-	/*pr_info("%s:Recieved count - %d\n",__func__,s2w_touch_count);
-	pr_info("%s:max_x-%d\n",__func__,max_x);
-	pr_info("%s:max_y-%d\n",__func__,max_y);
-	pr_info("%s:min_x-%d\n",__func__,min_x);
-	pr_info("%s:min_y-%d\n",__func__,min_y);*/
-	/*This function detects the nature of sweep input, and on the basis of following, it returns -
-	1 - sweep right
-	2 - sweep left
-	3 - sweep up
-	4 - sweep down*/
-	//pr_info("%s:multiple_dir - %d\n",__func__,multiple_dir);
-	/*for(i = 0; i < 4; i++ )
-		pr_info("%s:dir[%d] - %d\n",__func__,i,dir[i]);*/
-	if (abs(x - x_first) > 150 && abs(y - y_first) < 50 && abs(max_y - y) < 50) {
-           if(dir[0] > s2w_touch_count/2) {
-           	  //pr_info("%s:Sweep right\n",__func__);
-           	  return 1;
-           	}
-           	else if(dir[1] > s2w_touch_count/2) {
-           	  //pr_info("%s:Sweep left\n",__func__);
-           	  return 2;
-           	}
-	}
-	if (abs(y - y_first) > 150 && abs(x - x_first) < 50 && abs(max_x - x) < 50) {
-           if(dir[2] > s2w_touch_count/2) {
-           	  //pr_info("%s:Sweep up\n",__func__);
-           	  return 3;
-           	}
-           	else if(dir[3] > s2w_touch_count/2) {
-           	  //pr_info("%s:Sweep down\n",__func__);
-           	  return 4;
-           	}
-	}
-	if(abs(x - x_first) > 100 && abs(y - y_first) > 100 && (multiple_dir == s2w_touch_count - 1)) {
-		if(x > x_first) {
-			//pr_info("%s:Forward diagonal swipe!!\n",__func__);
-           	return 5;
-		}//forward diagonal swipe!!
-		else if(x < x_first) {
-			//pr_info("%s:Backward diagonal swipe!!\n",__func__);
-           	return 6;
-		}//backward diagonal swipe!!
-	}
-	if(abs(x - x_first) > 100 && abs(y - y_first) > 100 && (multiple_dir < s2w_touch_count - 1) && dir[0] > s2w_touch_count/3 && dir[3] > s2w_touch_count/3) {
-		//pr_info("%s:Draw 'L'\n",__func__);
-           	  return 7;
-	}
-	if(abs(x - x_first) > 80 && abs(y - y_first) < 50 && dir[2] > s2w_touch_count/3 && dir[3] > s2w_touch_count/3 && (multiple_dir < s2w_touch_count - 1)) {
-		//pr_info("%s:Draw 'V'\n",__func__);
-           	  return 8;
-	}
-	
-	s2w_coord_reset();
-	return 0;
-	
-}
-
-static bool detect_sweep2wake(int x, int y, int id)
-{
-	        key = KEY_POWER;
-		if (id == 255 && s2w_touch_count > 10) {
-			int x = s2w_coord_nature();
-			if(x) {
-				if(x == 1) {
-					if(s2w_right) {
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}
-				if(x == 2) {
-					if(s2w_left){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}
-                if(x == 3) {
-					if(s2w_up){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}
-				if(x == 4) {
-					if(s2w_down){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				} 
-				if(x == 5) {
-					if(s2w_fwd_diag){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}    
-				if(x == 6) {
-					if(s2w_bck_diag){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}
-				if(x == 7) {
-					if(s2w_l){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}
-				if(x == 8) {
-					if(s2w_v){
-						s2w_coord_reset();
-			            doubletap2wake_reset();
-						return true;
-					}
-				}
-			   //pr_info("%s returned true\n",__func__);
-			   
-			   
-		}
-		} else {
-			//doubletap2wake_reset();
-			s2w_coord_dump(x, y);
-			direction_vector_calc();
-			new_touch(x, y);
-		}
-		if (ktime_to_ms(ktime_get())-tap_time_pre > D2W_TIME){
-			s2w_coord_reset();
-			doubletap2wake_reset();
-		}
-		//pr_info("%s returned false\n",__func__);
-		return false;
-}
-#endif // CYTTSP3_D2W
-
 /* read xy_data for all current touches */
 static int _cyttsp_xy_worker(struct cyttsp *ts)
 {
@@ -2094,36 +1729,6 @@ static int _cyttsp_xy_worker(struct cyttsp *ts)
 	}
 
 	input_sync(ts->input);
-
-#ifdef CYTTSP3_D2W
-	if (scr_suspended) {
-		if (d2w_switch) {
-			if (ts->xy_data.touch12_id == 255) { //255? trust @corphish
-				 touch_cnt = true;
-			} else {
-				if (detect_doubletap2wake(be16_to_cpu(ts->xy_data.tch1.x),
-						be16_to_cpu(ts->xy_data.tch1.y)) == true) {
-					pr_info("%s: d2w: power on\n", __func__);
-					doubletap2wake_pwrtrigger();
-				}
-			}
-		}
-        if (s2w_switch) {
-               //pr_info("%s: testing s2w\n", __func__);
-               touch_cnt = true;
-			   if (detect_sweep2wake(be16_to_cpu(ts->xy_data.tch1.x),
-						be16_to_cpu(ts->xy_data.tch1.y), ts->xy_data.touch12_id) == true) {
-			   	    	                   //pr_info("%s: sweep2wake: power on\n", __func__);
-					                       doubletap2wake_pwrtrigger();
-                                     
-					   
-				}
-					
-		}
-
-	}
-#endif // CYTTSP3_D2W
-
 	goto _cyttsp_xy_worker_exit;
 
 _cyttsp_xy_worker_error_exit:
@@ -4045,291 +3650,6 @@ static ssize_t cyttsp_drv_upgrade_show(struct device *dev,
 
 static DEVICE_ATTR(drv_upgrade, S_IRUSR | S_IWUSR | S_IRGRP |S_IWGRP |
 	S_IROTH , cyttsp_drv_upgrade_show, NULL);
-#if defined(CYTTSP3_D2W)
-static ssize_t d2w_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", d2w_switch);
-
-	return count;
-}
-
-void boot_flag_check(void) {
-	if(d2w_switch == 0 && mm_switch == 0 && s2w_switch == 0)
-                boot_flag = 0;
-        
-}
-
-static ssize_t d2w_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		d2w_switch = 0;
-	} else if (buf[0] == '1') {
-		d2w_switch = 1;
-	}
-        boot_flag_check();
-
-	return count;
-}
-struct kobject *android_touch_kobj;
-static DEVICE_ATTR(doubletap2wake, (S_IWUSR|S_IRUGO),
-	d2w_show, d2w_dump);
-static ssize_t music_mode_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", mm_switch);
-
-	return count;
-}
-
-static ssize_t music_mode_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		mm_switch = 0;
-	} else if (buf[0] == '1') {
-		mm_switch = 1;
-	}
-        boot_flag_check();
-
-	return count;
-}
-
-static DEVICE_ATTR(music_mode, (S_IWUSR|S_IRUGO),
-	music_mode_show, music_mode_dump);
-
-static ssize_t s2w_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_switch);
-
-	return count;
-}
-//s2w master switch
-static ssize_t s2w_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_switch = 0;
-	} else if (buf[0] == '1') {
-		s2w_switch = 1;
-	}
-        boot_flag_check();
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_master, (S_IWUSR|S_IRUGO),
-	s2w_show, s2w_dump);
-//specific switches
-static ssize_t s2w_right_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_right);
-
-	return count;
-}
-
-static ssize_t s2w_right_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_right = 0;
-	} else if (buf[0] == '1') {
-		s2w_right = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_right, (S_IWUSR|S_IRUGO),
-	s2w_right_show, s2w_right_dump);
-//specific switches
-static ssize_t s2w_left_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_left);
-
-	return count;
-}
-
-static ssize_t s2w_left_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_left = 0;
-	} else if (buf[0] == '1') {
-		s2w_left = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_left, (S_IWUSR|S_IRUGO),
-	s2w_left_show, s2w_left_dump);
-//specific switches
-static ssize_t s2w_up_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_up);
-
-	return count;
-}
-
-static ssize_t s2w_up_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_up = 0;
-	} else if (buf[0] == '1') {
-		s2w_up = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_up, (S_IWUSR|S_IRUGO),
-	s2w_up_show, s2w_up_dump);
-#endif 
-//specific switches
-static ssize_t s2w_down_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_down);
-
-	return count;
-}
-
-static ssize_t s2w_down_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_down = 0;
-	} else if (buf[0] == '1') {
-		s2w_down = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_down, (S_IWUSR|S_IRUGO),
-	s2w_down_show, s2w_down_dump);
-//specific switches
-static ssize_t s2w_fwd_diag_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_fwd_diag);
-
-	return count;
-}
-
-static ssize_t s2w_fwd_diag_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_fwd_diag = 0;
-	} else if (buf[0] == '1') {
-		s2w_fwd_diag = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_fwd_diag, (S_IWUSR|S_IRUGO),
-	s2w_fwd_diag_show, s2w_fwd_diag_dump);
-//specific switches
-static ssize_t s2w_bck_diag_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_bck_diag);
-
-	return count;
-}
-
-static ssize_t s2w_bck_diag_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_bck_diag = 0;
-	} else if (buf[0] == '1') {
-		s2w_bck_diag = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_bck_diag, (S_IWUSR|S_IRUGO),
-	s2w_bck_diag_show, s2w_bck_diag_dump);
-//specific switches
-static ssize_t s2w_l_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_l);
-
-	return count;
-}
-
-static ssize_t s2w_l_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_l = 0;
-	} else if (buf[0] == '1') {
-		s2w_l = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_l, (S_IWUSR|S_IRUGO),
-	s2w_l_show, s2w_l_dump);
-//specific switches
-static ssize_t s2w_v_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	size_t count = 0;
-
-	count += sprintf(buf, "%d\n", s2w_v);
-
-	return count;
-}
-
-static ssize_t s2w_v_dump(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	if (buf[0] == '0') {
-		s2w_v = 0;
-	} else if (buf[0] == '1') {
-		s2w_v = 1;
-	}
-
-	return count;
-}
-
-static DEVICE_ATTR(s2w_v, (S_IWUSR|S_IRUGO),
-	s2w_v_show, s2w_v_dump);
-//CYTTSP3_D2W
 static void cyttsp_ldr_init(struct cyttsp *ts)
 {
 #ifdef CONFIG_TOUCHSCREEN_DEBUG
@@ -4398,61 +3718,6 @@ static void cyttsp_ldr_init(struct cyttsp *ts)
 
 
 #endif
-#ifdef CYTTSP3_D2W
-	/*if (device_create_file(ts->dev, &dev_attr_d2w_switch))
-		pr_err("%s: Cannot create d2w_switch\n", __func__);*/
-       
-       android_touch_kobj = kobject_create_and_add("android_touch", NULL) ;
-	if (android_touch_kobj == NULL) {
-		pr_warn("%s: android_touch_kobj create_and_add failed\n", __func__);
-	}
-       int rc = 0;
-       rc = sysfs_create_file(android_touch_kobj, &dev_attr_doubletap2wake);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for doubletap2wake\n", __func__);
-	}
-       rc = sysfs_create_file(android_touch_kobj, &dev_attr_music_mode);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for music mode\n", __func__);
-	}
-      rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_master);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_right);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_right\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_left);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_up);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_down);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_fwd_diag);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_bck_diag);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_l);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-	rc = sysfs_create_file(android_touch_kobj, &dev_attr_s2w_v);
-	if (rc) {
-		pr_warn("%s: sysfs_create_file failed for s2w_master\n", __func__);
-	}
-		
-#endif
 
 	return;
 }
@@ -4487,10 +3752,6 @@ static void cyttsp_ldr_free(struct cyttsp *ts)
 
 	device_remove_file(ts->dev, &dev_attr_raw_counts);
 	device_remove_file(ts->dev, &dev_attr_drv_upgrade);
-#endif
-#ifdef CYTTSP3_D2W
-	//device_remove_file(android_touch, &dev_attr_d2w_switch);
-        kobject_del(android_touch_kobj);
 #endif
 }
 
@@ -5139,15 +4400,6 @@ void cyttsp_early_suspend(struct early_suspend *h)
 	int retval = 0;
 	Printlog("[%s]:\n",__FUNCTION__);
 	cyttsp_dbg(ts, CY_DBG_LVL_3, "%s: EARLY SUSPEND ts=%p\n", __func__, ts);
-#ifdef CYTTSP3_D2W
-	if (d2w_switch || mm_switch || s2w_switch) {
-		//enable_irq(ts->irq);
-		enable_irq_wake(ts->irq);
-                boot_flag = 1;
-	}
-		
-	else
-#endif
 	retval = cyttsp_suspend(ts);
 	if (retval < 0) {
 		pr_err("%s: Early suspend failed with error code %d\n",
@@ -5161,14 +4413,6 @@ void cyttsp_late_resume(struct early_suspend *h)
 	int retval = 0;
 	Printlog("[%s]:\n",__FUNCTION__);
 	cyttsp_dbg(ts, CY_DBG_LVL_3, "%s: LATE RESUME ts=%p\n", __func__, ts);
-#ifdef CYTTSP3_D2W
-	if ((d2w_switch || mm_switch || s2w_switch) && boot_flag)
-		{
-			disable_irq_wake(ts->irq);
-			//disable_irq(ts->irq);
-		}
-	else
-#endif
 	retval = cyttsp_resume(ts);
 	if (retval < 0) {
 		pr_err("%s: Late resume failed with error code %d\n",
@@ -5641,10 +4885,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 		goto error_init;
 	}
 
-/*#ifdef CYTTSP3_D2W
-	doubletap2wake_pwrdev = input_device;
-#endif*/
-
 	ts->input = input_device;
 	input_device->name = name;
 	snprintf(ts->phys, sizeof(ts->phys), "%s", dev_name(dev));	
@@ -5681,10 +4921,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 	memset(ts->prv_trk, CY_NTCH, sizeof(ts->prv_trk));
 
 	__set_bit(EV_ABS, input_device->evbit);
-/*#ifdef CYTTSP3_D2W
-      __set_bit(EV_KEY, input_device->evbit);
-      __set_bit(KEY_POWER, input_device->keybit);
-#endif*/
 	set_bit(INPUT_PROP_DIRECT, input_device->propbit); 
 	for (i = 0; i < (ts->platform_data->frmwrk->size / CY_NUM_ABS_VAL);
 		i++) {
@@ -5742,23 +4978,11 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 	if (ts->platform_data->frmwrk->enable_vkeys)
 		input_set_capability(input_device, EV_KEY, KEY_PROG1);
 
-/*#ifdef CYTTSP3_D2W
-	    input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_POWER);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_PLAYPAUSE);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_PREVIOUSSONG);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_NEXTSONG);
-        input_set_capability(doubletap2wake_pwrdev, EV_KEY, KEY_PHONE);
-#endif*/
-//doubletap2wake_setdev(input_device);
 	/* enable interrupts */
 #ifdef CY_USE_LEVEL_IRQ
 	irq_flags = IRQF_TRIGGER_LOW | IRQF_ONESHOT;
 #else
 	irq_flags = IRQF_TRIGGER_FALLING | IRQF_ONESHOT;
-#endif
-#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
-	irq_flags = irq_flags | IRQF_NO_SUSPEND
-	input_set_capability(input_device, EV_KEY, KEY_POWER);
 #endif
 	cyttsp_dbg(ts, CY_DBG_LVL_3,
 		"%s: Initialize IRQ: flags=%08X\n",
@@ -5780,18 +5004,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 			__func__, retval);
 		goto error_input_register_device;
 	}
-
-/*#ifdef CYTTSP3_D2W
-	retval = input_register_device(doubletap2wake_pwrdev);
-	if (retval < 0) {
-		pr_err("%s: Error, failed to register input device r=%d\n",
-			__func__, retval);
-		goto error_input_register_device;
-	}
-#endif*/
-
-#ifdef CYTTSP3_D2W
-#endif
 
 	/* Add /sys files */
 	cyttsp_ldr_init(ts);
@@ -5819,9 +5031,6 @@ void *cyttsp_core_init(struct cyttsp_bus_ops *bus_ops,
 
 error_input_register_device:
 	input_free_device(input_device);
-/*#ifdef CYTTSP3_D2W
-	input_free_device(doubletap2wake_pwrdev);
-#endif*/
 error_init:
 
 	mutex_destroy(&ts->data_lock);
@@ -5845,5 +5054,3 @@ EXPORT_SYMBOL_GPL(cyttsp_core_init);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Cypress TrueTouch(R) Standard touchscreen driver core");
 MODULE_AUTHOR("Cypress");
-
-
