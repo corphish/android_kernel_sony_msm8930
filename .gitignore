@@ -81,6 +81,12 @@ GRTAGS
 GSYMS
 GTAGS
 
+# build
+zip/
+clean.sh
+zip.sh
+upload.sh
+
 *.orig
 *~
 \#*#
